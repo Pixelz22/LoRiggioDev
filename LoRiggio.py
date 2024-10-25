@@ -7,7 +7,8 @@ import discord
 from discord import app_commands
 import os.path
 
-from utils import srcpath
+from utils import srcpath, whisper, shout
+from LiarsDice import LiarsDiceGame
 
 logging.getLogger("discord").setLevel(logging.INFO)  # Silence Discord.py debug
 logging.basicConfig(level=logging.DEBUG)
@@ -30,8 +31,9 @@ intents.message_content = True
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)  # Build command tree
 
-# app commands?
 loriggio = app_commands.Group(name="loriggio", description="testing?")
+
+# region Bot Events
 
 @client.event
 async def on_ready():
@@ -55,11 +57,32 @@ async def on_message(msg: discord.Message):
         f_log.info("Performed authorized sync.")
         await msg.add_reaction("✅")  # leave confirmation
         return
+    if msg.content.startswith("loriggio/clear") and msg.author.id == configuration["owner_id"]:  # Perform sync
+        split = msg.content.split()
+        if len(split) == 1:
+            tree.clear_commands(guild=None)
+        else:
+            if split[1] == "this":
+                g = msg.guild
+            else:
+                g = discord.Object(id=int(split[1]))
+            tree.clear_commands(guild=g)
+        f_log.info("Cleared command tree.")
+        await msg.add_reaction("✅")  # leave confirmation
+        return
+
+# endregion
 
 @loriggio.command()
-async def peek(ctx: discord.Interaction):
-    await ctx.response.send_message("psst", ephemeral=True, delete_after=10)
+async def psst(ctx: discord.Interaction):
+    await whisper(ctx, "psssssssst")
+
+@loriggio.command()
+async def ping(ctx: discord.Interaction, user: discord.User):
+    await shout(ctx, f"Hello, {user.mention}! Your ID is {user.id}")
 
 
+# Register the slash commands
 tree.add_command(loriggio)
+# Start the bot
 client.run(TOKEN)
