@@ -12,12 +12,12 @@ class ErrorResponse(RuntimeError):
 
 class LiarsDiceGame:
     # Game Info
-    creator: int                          # Discord ID of the creator
+    creator: discord.User                 # Discord ID of the creator
     dice_per_player: int                  # duh
     dice_sides: int                       # What type of dice we playin' with? D6? D20?
     kick_losers: bool                     # Do players get kicked from the game when they lose?
     allow_count_reset_on_increment: bool  # Can a player lower the dice count if they raise the dice num?
-    players: list[int]                    # Set of Discord IDs of players in the game
+    players: list[discord.User]           # Set of Discord Users of players in the game
 
     # Round Info
     in_round: bool                # are we in the middle of a round?
@@ -26,7 +26,7 @@ class LiarsDiceGame:
     current_bet: tuple[int, int]  # The current bet. Format: [dice count, # on the dice], e.g. [2, 3] = Two 3s
     cups: dict[int, list[int]]    # The cups belonging to each player. cups[player_id][X] = # of Xs that player has
 
-    def __init__(self, creator: int, dice_per_player=5, dice_sides=6,
+    def __init__(self, creator: discord.User, dice_per_player=5, dice_sides=6,
                  kick_losers=True, allow_count_reset_on_increment=False):
         self.creator = creator
         self.dice_per_player = dice_per_player
@@ -40,15 +40,19 @@ class LiarsDiceGame:
         self.in_round = False
         self.join(creator)
 
-    def join(self, player_id: int):
+    def join(self, player: discord.User):
         if self.round_num > 0:
             raise ErrorResponse("Game has started, cannot add additional players.")
-        if player_id in self.players:
+        if player in self.players:
             raise ErrorResponse("You are already part of the game.")
-        self.players.append(player_id)
+        self.players.append(player)
 
-    def leave(self, player_id: int):
-        pass
+    def leave(self, player: discord.User):
+        if self.in_round:
+            raise ErrorResponse("Cannot leave in the middle of the round.")
+        if player not in self.players:
+            raise ErrorResponse("You aren't part of the game.")
+        self.players.remove(player)
 
     def begin_next_round(self):
         if self.in_round:
@@ -58,15 +62,15 @@ class LiarsDiceGame:
         self.raiser_idx = self.round_num - 1
 
         for player in self.players:
-            self.cups[player] = [0 for _ in range(self.dice_sides)]
+            self.cups[player.id] = [0 for _ in range(self.dice_sides)]
             for die in [random.randint(1, self.dice_sides) for _ in range(self.dice_per_player)]:
-                self.cups[player][die] += 1
+                self.cups[player.id][die] += 1
 
         self.current_bet = 0, 0
         self.in_round = True
 
-    def raise_bet(self, player_id: int, dice_count: int, dice_num: int):
-        if player_id != self.players[self.raiser_idx]:  # wrap around on caller_idx is handled here
+    def raise_bet(self, player: discord.User, dice_count: int, dice_num: int):
+        if player != self.players[self.raiser_idx]:  # wrap around on caller_idx is handled here
             raise ErrorResponse(f"It's not your turn to raise.")
 
         # Validate: Bet is physically possible
@@ -93,7 +97,7 @@ class LiarsDiceGame:
         self.current_bet = dice_count, dice_num
         self.raiser_idx += 1
 
-    def call_bet(self, player_id: int) -> bool:
+    def call_bet(self, player: discord.User) -> bool:
         """
         Returns whether bet was true.
         Remember that the bet is if there are AT LEAST X of Y dice on the table.
@@ -110,16 +114,16 @@ class LiarsDiceGame:
 
         # Conditionally kick players if we are playing with that rule
         if not success and self.kick_losers:
-            self.players.remove(player_id)
-            self.cups.pop(player_id)
+            self.players.remove(player)
+            self.cups.pop(player.id)
 
         self.in_round = False
         return success
 
-    def peek(self, player_id: int) -> list[int]:
+    def peek(self, player: discord.User) -> list[int]:
         if not self.in_round:
             raise ErrorResponse("Not currently in a round.")
-        return self.cups[player_id].copy()
+        return self.cups[player.id].copy()
 
 
 # Liar's Dice Game State
@@ -135,7 +139,7 @@ async def new_game(ctx: discord.Interaction, force: bool = False):
         if not force:
             raise ErrorResponse("A game is already running. Run '/liars force_new' to force a reset.")
 
-    ld_games[ctx.channel_id] = LiarsDiceGame(ctx.user.id)
+    ld_games[ctx.channel_id] = LiarsDiceGame(ctx.user)
     await shout(ctx, f"Game was created for {ctx.channel.mention}! Run '/liars join' to be a part of it!")
 
 async def validate_cmd_presence(ctx: discord.Interaction):
@@ -175,7 +179,7 @@ async def join(ctx: discord.Interaction):
     global ld_games
     await validate_cmd_presence(ctx)
 
-    ld_games[ctx.channel_id].join(ctx.user.id)
+    ld_games[ctx.channel_id].join(ctx.user)
     await shout(ctx, f"{ctx.user.mention} has joined the game!")
 
 @liars.command()
@@ -183,12 +187,22 @@ async def leave(ctx: discord.Interaction):
     global ld_games
     await validate_cmd_presence(ctx)
 
-    ld_games[ctx.channel_id].leave(ctx.user.id)
+    ld_games[ctx.channel_id].leave(ctx.user)
     await shout(ctx, f"{ctx.user.mention} has joined the game!")
 
 @liars.command()
 async def start(ctx: discord.Interaction):
-    pass
+    global ld_games
+    await validate_cmd_presence(ctx)
+    game = ld_games[ctx.channel_id]
+
+    game.begin_next_round()
+
+    embed = discord.Embed(title="Liar's Dice",
+                          description="The die is cast, the game begun!")
+    turn_order_str = '\n'.join([f"- {player.name}" for player in game.players])
+    embed.add_field(name="Turn Order:", value=turn_order_str)
+    await shout(ctx, f"The die is cast, the game begun!")
 
 @liars.command(name="raise")
 async def raise_bet(ctx: discord.Interaction, dice_count: int, dice_num: int):
