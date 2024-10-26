@@ -108,7 +108,7 @@ class LiarsDiceGame:
 
         # Total up all the desired type of die
         count = 0
-        for player, cup in self.cups.items():
+        for cup in self.cups.values():
             count += cup[self.current_bet[1] - 1]
         # Compare it to the bet
         bet_was_met = count >= self.current_bet[0]
@@ -157,10 +157,13 @@ async def new_game(ctx: discord.Interaction, force: bool = False):
     ld_games[ctx.channel_id] = LiarsDiceGame(ctx.user)
     await shout(ctx, f"Game was created for {ctx.channel.mention}! Run `/liars join` to be a part of it!")
 
-async def validate_cmd_presence(ctx: discord.Interaction):
+async def validate_cmd_presence(ctx: discord.Interaction, ignore_user=False):
     global ld_games
     if ctx.channel_id not in ld_games:
-        raise ErrorResponse("There is no game in this channel. Run '/liars new' to make one!")
+        raise ErrorResponse("There is no game in this channel. Run `/liars new` to make one!")
+    if not ignore_user and ctx.user not in ld_games[ctx.channel_id].players:
+        raise ErrorResponse(f"You are not a part of the {ctx.channel.mention} Liar's Dice game. "
+                            f"Run `/liars join` to join the fun!")
 
 # endregion
 
@@ -193,7 +196,7 @@ async def force_new(ctx: discord.Interaction):
 @ld_group.command()
 async def join(ctx: discord.Interaction):
     global ld_games
-    await validate_cmd_presence(ctx)
+    await validate_cmd_presence(ctx, ignore_user=True)
 
     ld_games[ctx.channel_id].join(ctx.user)
     await shout(ctx, f"{ctx.user.mention} has joined the game!")
@@ -250,7 +253,8 @@ async def raise_bet(ctx: discord.Interaction, dice_count: int, dice_num: int):
     game = ld_games[ctx.channel_id]
 
     game.raise_bet(ctx.user, dice_count, dice_num)
-    await shout(ctx, f"{ctx.user.mention} has raised the bet to {dice_count} {dice_num}s")
+    await shout(ctx, f"{ctx.user.mention} has raised the bet to {dice_count} {dice_num}s. "
+                     f"Next to raise is {game.players[game.raiser_idx].mention}.")
 
 @ld_group.command(name="call")
 async def call_bet(ctx: discord.Interaction):
@@ -259,7 +263,7 @@ async def call_bet(ctx: discord.Interaction):
     game = ld_games[ctx.channel_id]
 
     success = game.call_bet(ctx.user)
-    await shout(ctx, f"Bet was called! Did the bet hold: {success}")
+    await shout(ctx, f"{ctx.user.mention} called the bet! Did the bet hold: {success}")
 
 @ld_group.command()
 async def peek(ctx: discord.Interaction):
