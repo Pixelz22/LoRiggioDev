@@ -8,7 +8,7 @@ from discord import app_commands
 import os.path
 
 from utils import srcpath, whisper, shout
-from LiarsDice import LiarsDiceGame
+import LiarsDice
 
 logging.getLogger("discord").setLevel(logging.INFO)  # Silence Discord.py debug
 logging.basicConfig(level=logging.DEBUG)
@@ -84,5 +84,6 @@ async def ping(ctx: discord.Interaction, user: discord.User):
 
 # Register the slash commands
 tree.add_command(loriggio)
+tree.add_command(LiarsDice.ld_group)
 # Start the bot
 client.run(TOKEN)
