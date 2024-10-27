@@ -12,7 +12,7 @@ async def shout(ctx: discord.Interaction, msg: str = None, embed: discord.Embed 
     except discord.InteractionResponded:
         await ctx.followup.send(content=msg, embed=embed, ephemeral=False)
 
-async def whisper(ctx: discord.Interaction, msg: str = None, embed: discord.Embed = None, delete_after=10):
+async def whisper(ctx: discord.Interaction, msg: str = None, embed: discord.Embed = None, delete_after=15):
     try:
         await ctx.response.send_message(content=msg, embed=embed, ephemeral=True, delete_after=delete_after)
     except discord.InteractionResponded:
