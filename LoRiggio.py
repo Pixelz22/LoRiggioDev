@@ -48,6 +48,8 @@ async def on_ready():
 async def on_message(msg: discord.Message):
     if OWNER < 0:
         return
+    if msg.guild is None:
+        return  # Don't respond to DMs
 
     f_log = log.getChild("event.on_message")
     # Message synchronization command
