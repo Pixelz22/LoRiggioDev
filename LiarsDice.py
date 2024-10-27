@@ -52,7 +52,7 @@ class LiarsDiceGame:
     def join(self, player: discord.User):
         if self.round_num > 0:
             raise ErrorResponse("Game has started, cannot add additional players.")
-        if player in self.live_players:
+        if player in self.all_players:
             raise ErrorResponse("You are already part of the game.")
         self.live_players.append(player)
         self.all_players.add(player)
@@ -70,6 +70,13 @@ class LiarsDiceGame:
             raise ErrorResponse("Game has already begun!")
         if len(self.all_players) < 2:
             raise ErrorResponse("Cannot begin a game with 1 player.")
+
+        # Shuffle turn order
+        new_order = []
+        for i in range(len(self.live_players)):
+            new_order.append(self.live_players.pop(random.randint(0, len(self.live_players) - 1)))
+
+        self.live_players = new_order
 
         self.begin_next_round()
 
@@ -172,8 +179,10 @@ class LiarsDiceGame:
 
     def add_state_embed(self, embed: discord.Embed):
         turn_order_str = ""
-        for i, player in enumerate(self.live_players):
-            player_name = (f"*{player.display_name}*" if i == self.raiser_idx % len(self.live_players) and self.in_round
+        for i in range(len(self.live_players)):
+            idx = self.round_num - 1 + i  # Offset it so that first player in embed was the one who sets the bet
+            player = self.get_player(idx)
+            player_name = (f"*{player.display_name}*" if idx == self.raiser_idx % len(self.live_players) and self.in_round
                            else player.display_name)
             turn_order_str += f"{i + 1}. {player_name}\n"
         embed.add_field(name="Turn Order:", value=turn_order_str)
@@ -199,6 +208,27 @@ async def new_game(ctx: discord.Interaction, force: bool = False):
 
     ld_games[ctx.channel_id] = LiarsDiceGame(ctx.user)
     await shout(ctx, f"Game was created for {ctx.channel.mention}! "
+                 f"Run `/liars join` to be a part of it, and `/liars start` to begin the game!")
+
+
+async def reset_game(ctx: discord.Interaction, force: bool = False):
+    global ld_games
+    if ctx.channel_id not in ld_games:
+        raise ErrorResponse("No previous game has been played")
+
+    if not ld_games[ctx.channel_id].is_game_finished:
+        if ctx.user != ld_games[ctx.channel_id].creator:
+            raise ErrorResponse("Only the creator of the game can restart it.")
+        if not force:
+            raise ErrorResponse("A game is already running. Run `/liars force_new` to force a new game.")
+
+    old_game = ld_games[ctx.channel_id]
+    ld_games[ctx.channel_id] = LiarsDiceGame(ctx.user)
+    # Add all previous players to game
+    for player in old_game.all_players:
+        ld_games[ctx.channel_id].join(player)
+
+    await shout(ctx, f"Game was created for {ctx.channel.mention}! "
                      f"Run `/liars join` to be a part of it, and `/liars start` to begin the game!")
 
 
@@ -206,7 +236,7 @@ async def validate_cmd_presence(ctx: discord.Interaction, ignore_user=False):
     global ld_games
     if ctx.channel_id not in ld_games:
         raise ErrorResponse("There is no game in this channel. Run `/liars new` to make one!")
-    if not ignore_user and ctx.user not in ld_games[ctx.channel_id].live_players:
+    if not ignore_user and ctx.user not in ld_games[ctx.channel_id].all_players:
         raise ErrorResponse(f"You are not a part of the {ctx.channel.mention} Liar's Dice game. "
                             f"Run `/liars join` to join the fun!")
 
@@ -240,6 +270,16 @@ async def new(ctx: discord.Interaction):
 @ld_group.command()
 async def force_new(ctx: discord.Interaction):
     await new_game(ctx, force=True)
+
+
+@ld_group.command()
+async def reset(ctx: discord.Interaction):
+    await reset_game(ctx)
+
+
+@ld_group.command()
+async def force_reset(ctx: discord.Interaction):
+    await reset_game(ctx, force=True)
 
 
 @ld_group.command()
