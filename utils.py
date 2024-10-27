@@ -7,14 +7,14 @@ def srcpath(path: str) -> str:
     return os.path.join(__SRC__, path)
 
 async def shout(ctx: discord.Interaction, msg: str = None, embed: discord.Embed = None,
-                view: discord.ui.View = None, delete_after: int = None):
+                view: discord.ui.View = None, delete_after: float = None):
     try:
         await ctx.response.send_message(content=msg, embed=embed, view=view, ephemeral=False, delete_after=delete_after)
     except discord.InteractionResponded:
         await ctx.followup.send(content=msg, embed=embed, view=view, ephemeral=False)
 
 async def whisper(ctx: discord.Interaction, msg: str = None, embed: discord.Embed = None,
-                  view: discord.ui.View = None,  delete_after=15):
+                  view: discord.ui.View = None,  delete_after: float = 15):
     try:
         await ctx.response.send_message(content=msg, embed=embed, view=view, ephemeral=True, delete_after=delete_after)
     except discord.InteractionResponded:
