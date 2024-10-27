@@ -16,13 +16,18 @@ logging.basicConfig(level=logging.DEBUG)
 log = logging.getLogger("loriggio")
 
 # Loading/creating bot config
+if not os.path.exists(srcpath("config.json")):
+    with open("config.json", "w") as fp:
+        fp.write("{\n  \"token\": \"YOUR_TOKEN_HERE\"\n}\n")
+    log.warning("Please put your bot's token in the newly generated 'config.json' file.")
+    exit(1)
+configuration = json.load(open("config.json", "r"))
 
-if os.path.exists(srcpath("config.json")):
-    print("config exists")
-
-configuration = json.load(open('config.json'))
-
+# String token used to connect the bot to Discord
 TOKEN = configuration["token"]
+
+# Numeric Discord ID of op (for testing purposes ONLY)
+OWNER = configuration["owner_id"] if "owner_id" in configuration else -1
 
 
 # Setting up client
@@ -41,9 +46,12 @@ async def on_ready():
 
 @client.event
 async def on_message(msg: discord.Message):
+    if OWNER < 0:
+        return
+
     f_log = log.getChild("event.on_message")
     # Message synchronization command
-    if msg.content.startswith("loriggio/sync") and msg.author.id == configuration["owner_id"]:  # Perform sync
+    if msg.content.startswith("loriggio/sync") and msg.author.id == OWNER:  # Perform sync
         split = msg.content.split()
         if len(split) == 1:
             await tree.sync()
@@ -57,7 +65,7 @@ async def on_message(msg: discord.Message):
         f_log.info("Performed authorized sync.")
         await msg.add_reaction("✅")  # leave confirmation
         return
-    if msg.content.startswith("loriggio/clear") and msg.author.id == configuration["owner_id"]:  # Perform sync
+    if msg.content.startswith("loriggio/clear") and msg.author.id == OWNER:  # Perform sync
         split = msg.content.split()
         if len(split) == 1:
             tree.clear_commands(guild=None)
