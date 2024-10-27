@@ -1,9 +1,7 @@
 import random
-from typing import Any
 
 import discord
 from discord import app_commands
-from discord._types import ClientT
 
 from utils import whisper, shout
 
@@ -11,6 +9,47 @@ from utils import whisper, shout
 class ErrorResponse(RuntimeError):
     def __init__(self, msg):
         super().__init__(msg)
+
+
+def get_start_ui() -> discord.ui.View:
+    view = discord.ui.View()
+    view.on_error = lambda interaction, err, item: on_error(interaction, err)
+
+    join_btn = discord.ui.Button(label="Join Game")
+    join_btn.callback = join.callback
+    leave_btn = discord.ui.Button(label="Leave Game")
+    leave_btn.callback = leave.callback
+    start_btn = discord.ui.Button(label="Start!", style=discord.ButtonStyle.primary)
+    start_btn.callback = start.callback
+
+    view.add_item(join_btn)
+    view.add_item(leave_btn)
+    view.add_item(start_btn)
+
+    return view
+
+
+def get_end_ui() -> discord.ui.View:
+    view = discord.ui.View()
+    view.on_error = lambda interaction, err, item: on_error(interaction, err)
+
+    reset_btn = discord.ui.Button(label="Play again", style=discord.ButtonStyle.primary)
+    reset_btn.callback = reset.callback
+
+    view.add_item(reset_btn)
+
+    return view
+
+def get_continue_ui() -> discord.ui.View:
+    view = discord.ui.View()
+    view.on_error = lambda interaction, err, item: on_error(interaction, err)
+
+    continue_btn = discord.ui.Button(label="Continue", style=discord.ButtonStyle.primary)
+    continue_btn.callback = next_round.callback
+
+    view.add_item(continue_btn)
+
+    return view
 
 
 class LiarsDiceGame:
@@ -39,15 +78,21 @@ class LiarsDiceGame:
         self.kick_losers = kick_losers
         self.allow_count_reset_on_increment = allow_count_reset_on_increment
 
-        self.live_players = []
         self.all_players = set()
+        self.reset()
+        self.join(creator)
+
+    def reset(self):
+        self.live_players = list(self.all_players)
         self.cups = dict()
         self.round_num = 0  # We count rounds starting at 1. Fight me.
         self.raiser_idx = 0
         self.current_bet = 0, 0
         self.in_round = False
         self.is_game_finished = False
-        self.join(creator)
+
+    def is_game_started(self) -> bool:
+        return self.round_num > 0
 
     def get_player(self, idx: int) -> discord.User:
         return self.live_players[idx % len(self.live_players)]
@@ -189,26 +234,37 @@ class LiarsDiceGame:
         return dice
 
     def add_state_embed(self, embed: discord.Embed):
-        turn_order_str = ""
-        for i in range(len(self.live_players)):
-            idx = self.round_num - 1 + i  # Offset it so that first player in embed was the one who sets the bet
-            player = self.get_player(idx)
-            player_name = (
-                f"*{player.display_name}*" if idx == self.raiser_idx % len(self.live_players) and self.in_round
-                else player.display_name)
-            turn_order_str += f"{i + 1}. {player_name}\n"
-        embed.add_field(name="Turn Order:", value=turn_order_str)
+        if self.is_game_started():
+            turn_order_str = ""
+            for i in range(len(self.live_players)):
+                idx = self.round_num - 1 + i  # Offset it so that first player in embed was the one who sets the bet
+                player = self.get_player(idx)
+                player_name = (
+                    f"*{player.display_name}*" if idx == self.raiser_idx % len(self.live_players) and self.in_round
+                    else player.display_name)
+                turn_order_str += f"{i + 1}. {player_name}\n"
+            embed.add_field(name="Turn Order:", value=turn_order_str)
 
-        current_bet_str = (f"{self.current_bet[0]} {self.current_bet[1]}s" if self.current_bet != (0, 0)
-                           else "Bet hasn't been set")
-        embed.add_field(name="Current Bet:", value=current_bet_str)
+            current_bet_str = (f"{self.current_bet[0]} {self.current_bet[1]}s" if self.current_bet != (0, 0)
+                               else "Bet hasn't been set")
+            embed.add_field(name="Current Bet:", value=current_bet_str)
+        else:
+            embed.description = "The game has not yet started."
+            players_msg = ''.join([f"- {player.mention}\n" for player in self.all_players])
+            embed.add_field(name="Players:", value=players_msg)
 
-    def get_player_ui(self) -> discord.ui.View:
-        view = discord.ui.View()
-        if self.round_num > 0:
-            view.add_item(PeekButton())
+    def get_state_ui(self) -> discord.ui.View:
+        if self.is_game_started():
+            view = discord.ui.View()
 
-        return view
+            peek_btn = discord.ui.Button(label="Peek")
+            peek_btn.callback = peek.callback
+            view.add_item(peek_btn)
+
+            view.on_error = lambda interaction, err, item: on_error(interaction, err)
+            return view
+        else:
+            return get_start_ui()
 
 
 # Liar's Dice Game State
@@ -227,7 +283,8 @@ async def new_game(ctx: discord.Interaction, force: bool = False):
 
     ld_games[ctx.channel_id] = LiarsDiceGame(ctx.user)
     await shout(ctx, f"Game was created for {ctx.channel.mention}! "
-                     f"Run `/liars join` to be a part of it, and `/liars start` to begin the game!")
+                     f"Use the buttons below to join, leave, or start!",
+                view=ld_games[ctx.channel_id].get_state_ui())
 
 
 async def reset_game(ctx: discord.Interaction, force: bool = False):
@@ -259,22 +316,6 @@ async def validate_cmd_presence(ctx: discord.Interaction, ignore_user=False):
     if not ignore_user and ctx.user not in ld_games[ctx.channel_id].all_players:
         raise ErrorResponse(f"You are not a part of the {ctx.channel.mention} Liar's Dice game. "
                             f"Run `/liars join` to join the fun!")
-
-async def peek(ctx: discord.Interaction):
-    global ld_games
-    await validate_cmd_presence(ctx)
-    game = ld_games[ctx.channel_id]
-
-    dice = game.peek(ctx.user)
-    await whisper(ctx, str(dice), delete_after=60)
-
-
-class PeekButton(discord.ui.Button):
-    def __init__(self):
-        super().__init__(label="Peek")
-
-    async def callback(self, interaction: discord.Interaction[ClientT]) -> Any:
-        await peek(interaction)
 
 # endregion
 
@@ -345,9 +386,10 @@ async def start(ctx: discord.Interaction):
     game.start(ctx.user)
 
     embed = discord.Embed(title="Liar's Dice",
-                          description="The die is cast, the round begun!")
+                          description=f"The die is cast, the round begun! "
+                                      f"{game.get_player(game.raiser_idx).mention}, you set the bet.")
     game.add_state_embed(embed)
-    view = game.get_player_ui()
+    view = game.get_state_ui()
 
     await shout(ctx, embed=embed, view=view)
 
@@ -364,9 +406,10 @@ async def next_round(ctx: discord.Interaction):
     game.begin_next_round()
 
     embed = discord.Embed(title="Liar's Dice",
-                          description="The die is cast, the round begun!")
+                          description="The die is cast, the round begun! "
+                                      f"{game.get_player(game.raiser_idx).mention}, you set the bet.")
     game.add_state_embed(embed)
-    view = game.get_player_ui()
+    view = game.get_state_ui()
 
     await shout(ctx, embed=embed, view=view)
 
@@ -391,26 +434,32 @@ async def call_bet(ctx: discord.Interaction):
     result = game.call_bet(ctx.user)
     await shout(ctx, embed=result)
     if not game.is_game_finished:
-        await shout(ctx, f"Run `/liars continue` to move to the next round")
+        await shout(ctx, f"Press the button below to move on to the next round.", view=get_continue_ui())
     else:
         await shout(ctx, f"And the game is over! "
                          f"{game.get_player(0).mention}, congratulations! You're the winner!\n"
-                         f"To prepare a new game with the same people, have the game creator run `/liars reset`.")
+                         f"To prepare a new game with the same people, press the button below.",
+                    view=get_end_ui())
 
-
-@ld_group.command(name="peek")
-async def peek_cmd(ctx: discord.Interaction):
-    await peek(ctx)
 
 @ld_group.command()
-async def info(ctx: discord.Interaction):
+async def peek(ctx: discord.Interaction):
     global ld_games
     await validate_cmd_presence(ctx)
     game = ld_games[ctx.channel_id]
 
+    dice = game.peek(ctx.user)
+    await whisper(ctx, str(dice), delete_after=60)
+
+@ld_group.command()
+async def info(ctx: discord.Interaction):
+    global ld_games
+    await validate_cmd_presence(ctx, ignore_user=True)
+    game = ld_games[ctx.channel_id]
+
     embed = discord.Embed(title="Liar's Dice", description="")
     game.add_state_embed(embed)
-    view = game.get_player_ui()
+    view = game.get_state_ui()
 
     await whisper(ctx, embed=embed, view=view)
 
