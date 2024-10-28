@@ -1,7 +1,7 @@
 import random
 
 import discord
-from discord import app_commands
+from discord import app_commands, Interaction, Client
 
 from utils import whisper, shout
 
@@ -11,57 +11,19 @@ class ErrorResponse(RuntimeError):
         super().__init__(msg)
 
 
-def get_start_ui() -> discord.ui.View:
-    view = discord.ui.View()
-    view.on_error = lambda interaction, err, item: on_error(interaction, err)
-
-    join_btn = discord.ui.Button(label="Join Game")
-    join_btn.callback = join.callback
-    leave_btn = discord.ui.Button(label="Leave Game")
-    leave_btn.callback = leave.callback
-    start_btn = discord.ui.Button(label="Start!", style=discord.ButtonStyle.primary)
-    start_btn.callback = start.callback
-
-    view.add_item(join_btn)
-    view.add_item(leave_btn)
-    view.add_item(start_btn)
-
-    return view
-
-
-def get_end_ui() -> discord.ui.View:
-    view = discord.ui.View()
-    view.on_error = lambda interaction, err, item: on_error(interaction, err)
-
-    reset_btn = discord.ui.Button(label="Play again", style=discord.ButtonStyle.primary)
-    reset_btn.callback = reset.callback
-
-    view.add_item(reset_btn)
-
-    return view
-
-def get_continue_ui() -> discord.ui.View:
-    view = discord.ui.View()
-    view.on_error = lambda interaction, err, item: on_error(interaction, err)
-
-    continue_btn = discord.ui.Button(label="Continue", style=discord.ButtonStyle.primary)
-    continue_btn.callback = next_round.callback
-
-    view.add_item(continue_btn)
-
-    return view
-
-
 class LiarsDiceGame:
     # Game Info
-    creator: discord.User  # Discord ID of the creator
-    dice_per_player: int  # duh
-    dice_sides: int  # What type of dice we playin' with? D6? D20?
-    kick_losers: bool  # Do players get kicked from the game when they lose?
-    allow_count_reset_on_increment: bool  # Can a player lower the dice count if they raise the dice num?
+    creator: discord.User  # Discord ID of the creator?
     all_players: set[discord.User]  # Set of all players present at the end of the game
     live_players: list[discord.User]  # Set of Discord Users of players still in the game
     is_game_finished: bool  # Is the game over?
+    loss_counts: dict[int, int]  # Map each player's ID to how many times they've lost
+
+    # Game Settings
+    dice_per_player: int  # duh
+    dice_sides: int  # What type of dice we playin' with? D6? D20?
+    infinite_mode: bool  # Do players stay in the game when they lose?
+    allow_count_reset_on_increment: bool  # Can a player lower the dice count if they raise the dice num
 
     # Round Info
     in_round: bool  # are we in the middle of a round?
@@ -75,7 +37,7 @@ class LiarsDiceGame:
         self.creator = creator
         self.dice_per_player = dice_per_player
         self.dice_sides = dice_sides
-        self.kick_losers = kick_losers
+        self.infinite_mode = kick_losers
         self.allow_count_reset_on_increment = allow_count_reset_on_increment
 
         self.all_players = set()
@@ -90,6 +52,7 @@ class LiarsDiceGame:
         self.current_bet = 0, 0
         self.in_round = False
         self.is_game_finished = False
+        self.loss_counts = {player.id: 0 for player in self.all_players}
 
     def is_game_started(self) -> bool:
         return self.round_num > 0
@@ -127,6 +90,22 @@ class LiarsDiceGame:
         self.live_players = new_order
 
         self.begin_next_round()
+
+    def end_game(self) -> discord.Embed:
+        if not self.is_game_started():
+            raise ErrorResponse("The game has not even begun!")
+        if self.in_round:
+            raise ErrorResponse("We're in the middle of a round!")
+
+        self.is_game_finished = True
+        embed = discord.Embed(title="Liar's Dice: Final Results",
+                              description="The game is over! Here are everyone's final scores")
+
+        scores_msg = ''.join([f"- {player.mention}: Lost {self.loss_counts[player.id]} times\n"
+                              for player in self.all_players])
+        embed.add_field(name="", value=scores_msg)
+
+        return embed
 
     def begin_next_round(self):
         if self.is_game_finished:
@@ -211,18 +190,22 @@ class LiarsDiceGame:
         embed.add_field(name="Results:", value=result_msg, inline=False)
 
         # Conditionally kick players if we are playing with that rule
-        if self.kick_losers:
-            # Kick either the caller or the last person to raise
-            player_to_kick = player if bet_was_met else last_raiser
-            self.live_players.remove(player_to_kick)
-            self.cups.pop(player_to_kick.id)
-
-            if len(self.live_players) <= 1:
-                self.is_game_finished = True
-
+        player_who_lost = player if bet_was_met else last_raiser
+        self.on_player_lose(player_who_lost)
         self.in_round = False
 
         return embed
+
+    def on_player_lose(self, player: discord.User):
+        if not self.infinite_mode:
+            # Kick either the caller or the last person to raise
+            self.live_players.remove(player)
+            self.cups.pop(player.id)
+
+            if len(self.live_players) <= 1:
+                self.is_game_finished = True
+        else:
+            self.loss_counts[player.id] += 1
 
     def peek(self, player: discord.User) -> list[int]:
         if self.round_num < 1:
@@ -264,7 +247,85 @@ class LiarsDiceGame:
             view.on_error = lambda interaction, err, item: on_error(interaction, err)
             return view
         else:
-            return get_start_ui()
+            return self.get_start_ui()
+
+    def get_start_ui(self) -> discord.ui.View:
+        view = discord.ui.View()
+        view.on_error = lambda interaction, err, item: on_error(interaction, err)
+
+        join_btn = discord.ui.Button(label="Join Game")
+        join_btn.callback = join.callback
+        leave_btn = discord.ui.Button(label="Leave Game")
+        leave_btn.callback = leave.callback
+        start_btn = discord.ui.Button(label="Start!", style=discord.ButtonStyle.primary)
+        start_btn.callback = start.callback
+
+        mode_dd = ModeDropdown(self, row=0)
+
+        view.add_item(mode_dd)
+        view.add_item(join_btn)
+        view.add_item(leave_btn)
+        view.add_item(start_btn)
+
+        return view
+
+    def get_continue_ui(self) -> discord.ui.View:
+        view = discord.ui.View()
+        view.on_error = lambda interaction, err, item: on_error(interaction, err)
+
+        continue_btn = discord.ui.Button(label="Continue", style=discord.ButtonStyle.primary)
+        continue_btn.callback = next_round.callback
+        view.add_item(continue_btn)
+
+        if self.infinite_mode:
+            end_btn = discord.ui.Button(label="End Game")
+            end_btn.callback = end.callback
+            view.add_item(end_btn)
+
+        return view
+
+
+# region UI Components
+
+class ModeDropdown(discord.ui.Select):
+    game: LiarsDiceGame  # The game this dropdown belongs to
+
+    def __init__(self, game: LiarsDiceGame, row: int = None):
+        super().__init__(row=row, options=[
+            discord.SelectOption(emoji=f"🎲", label=f"Default Mode",
+                                 description="When a player loses, they're kicked from the table.",
+                                 value="default",
+                                 default=True),
+            discord.SelectOption(emoji=f"🔄", label=f"Infinite Mode",
+                                 description="Keep track of how many times each player lost.",
+                                 value="infinite")
+        ])
+        self.game = game
+
+    async def interaction_check(self, interaction: Interaction[Client], /) -> bool:
+        if interaction.user != self.game.creator:
+            await whisper(interaction, "Only the game creator can change the settings.")
+            return False
+        return True
+
+    async def callback(self, interaction: Interaction[Client]):
+        await interaction.response.defer()
+        assert interaction.data is not None and "custom_id" in interaction.data, "Invalid interaction data"
+        self.game.infinite_mode = True if self.values[0] == "default" else False
+
+
+def get_end_ui() -> discord.ui.View:
+    view = discord.ui.View()
+    view.on_error = lambda interaction, err, item: on_error(interaction, err)
+
+    reset_btn = discord.ui.Button(label="Play again", style=discord.ButtonStyle.primary)
+    reset_btn.callback = reset.callback
+
+    view.add_item(reset_btn)
+
+    return view
+
+# endregion
 
 
 # Liar's Dice Game State
@@ -276,15 +337,15 @@ ld_games: dict[int, LiarsDiceGame] = {}  # Map channel IDs to individual games
 async def new_game(ctx: discord.Interaction, force: bool = False):
     global ld_games
     if ctx.channel_id in ld_games and not ld_games[ctx.channel_id].is_game_finished:
-        if ctx.user != ld_games[ctx.channel_id].creator:
-            raise ErrorResponse("Only the creator of the game can restart it.")
+        if not (ctx.user == ld_games[ctx.channel_id].creator or ctx.user.guild_permissions.administrator):
+            raise ErrorResponse("Only the creator of the game or a server admin can restart it.")
         if not force:
             raise ErrorResponse("A game is already running. Run `/liars force_new` to force a new game.")
 
     ld_games[ctx.channel_id] = LiarsDiceGame(ctx.user)
     await shout(ctx, f"Game was created for {ctx.channel.mention}! "
                      f"Use the buttons below to join, leave, or start!",
-                view=ld_games[ctx.channel_id].get_state_ui())
+                view=ld_games[ctx.channel_id].get_start_ui())
 
 
 async def reset_game(ctx: discord.Interaction, force: bool = False):
@@ -293,20 +354,17 @@ async def reset_game(ctx: discord.Interaction, force: bool = False):
         raise ErrorResponse("No previous game has been played")
 
     if not ld_games[ctx.channel_id].is_game_finished:
-        if ctx.user != ld_games[ctx.channel_id].creator:
-            raise ErrorResponse("Only the creator of the game can restart it.")
+        if not (ctx.user == ld_games[ctx.channel_id].creator or ctx.user.guild_permissions.administrator):
+            raise ErrorResponse("Only the creator of the game or a server admin can restart it.")
         if not force:
             raise ErrorResponse("A game is already running. Run `/liars force_reset` to force a new game.")
 
-    old_game = ld_games[ctx.channel_id]
-    ld_games[ctx.channel_id] = LiarsDiceGame(ctx.user)
-    # Add all previous players to game
-    for player in old_game.all_players:
-        if player != ctx.user:
-            ld_games[ctx.channel_id].join(player)
+    game = ld_games[ctx.channel_id]
+    game.creator = ctx.user  # Re-assign the creator (allows admins to steal back the game)
+    game.reset()
 
     await shout(ctx, f"Game was reset for {ctx.channel.mention} with all the old players! "
-                     f"Run `/liars start` to begin the game!")
+                     f"Use the buttons below to start the game!", view=game.get_start_ui())
 
 
 async def validate_cmd_presence(ctx: discord.Interaction, ignore_user=False):
@@ -317,6 +375,7 @@ async def validate_cmd_presence(ctx: discord.Interaction, ignore_user=False):
         raise ErrorResponse(f"You are not a part of the {ctx.channel.mention} Liar's Dice game. "
                             f"Run `/liars join` to join the fun!")
 
+
 # endregion
 
 
@@ -324,12 +383,14 @@ async def validate_cmd_presence(ctx: discord.Interaction, ignore_user=False):
 
 ld_group = app_commands.Group(name="liars", description="Commands related to playing the game Liar's Dice.")
 
+
 @ld_group.interaction_check
 async def interaction_check(ctx: discord.Interaction):
     if ctx.guild is None:
         await shout(ctx, "I'm sorry, but you can't run this game in a DM. Try running it in a server!")
         return False
     return True
+
 
 @ld_group.error
 async def on_error(ctx: discord.Interaction[discord.Client], err: app_commands.AppCommandError | Exception):
@@ -345,27 +406,39 @@ async def on_error(ctx: discord.Interaction[discord.Client], err: app_commands.A
         await whisper(ctx, message, delete_after=None)
 
 
-@ld_group.command()
+@ld_group.command(name="help", description="Pulls up the manual!")
+async def help_cmd(ctx: discord.Interaction):
+    global ld_games
+
+    embed = discord.Embed(title="Liar's Dice Bot Manual",
+                          description="Here are some helpful commands for interacting with the bot!")
+    cmd_descriptions = ''.join([f"- */liars {cmd.name}*: {cmd.description}\n" for cmd in ld_group.walk_commands()])
+    embed.add_field(name="Command List:", value=cmd_descriptions)
+
+    await shout(ctx, embed=embed)
+
+
+@ld_group.command(description="Start a new game! Note you can have one distinct game per text channel.")
 async def new(ctx: discord.Interaction):
     await new_game(ctx)
 
 
-@ld_group.command()
+@ld_group.command(description="Force a new game to be created, even if one already exists.")
 async def force_new(ctx: discord.Interaction):
     await new_game(ctx, force=True)
 
 
-@ld_group.command()
+@ld_group.command(description="Reset the game with the same players.")
 async def reset(ctx: discord.Interaction):
     await reset_game(ctx)
 
 
-@ld_group.command()
+@ld_group.command(description="Force a game to reset, even if the game is already exists.")
 async def force_reset(ctx: discord.Interaction):
     await reset_game(ctx, force=True)
 
 
-@ld_group.command()
+@ld_group.command(description="Join the game for the channel you called the command in, if it exists.")
 async def join(ctx: discord.Interaction):
     global ld_games
     await validate_cmd_presence(ctx, ignore_user=True)
@@ -374,7 +447,7 @@ async def join(ctx: discord.Interaction):
     await shout(ctx, f"{ctx.user.mention} has joined the game!")
 
 
-@ld_group.command()
+@ld_group.command(description="Leave the game for the channel you called the command in.")
 async def leave(ctx: discord.Interaction):
     global ld_games
     await validate_cmd_presence(ctx)
@@ -383,7 +456,7 @@ async def leave(ctx: discord.Interaction):
     await shout(ctx, f"{ctx.user.mention} has left the game.")
 
 
-@ld_group.command()
+@ld_group.command(description="Start the game for the channel you called the command in.")
 async def start(ctx: discord.Interaction):
     global ld_games
     await validate_cmd_presence(ctx)
@@ -400,7 +473,20 @@ async def start(ctx: discord.Interaction):
     await shout(ctx, embed=embed, view=view)
 
 
-@ld_group.command(name="continue")
+@ld_group.command(description="Get information about the state of the game.")
+async def info(ctx: discord.Interaction):
+    global ld_games
+    await validate_cmd_presence(ctx, ignore_user=True)
+    game = ld_games[ctx.channel_id]
+
+    embed = discord.Embed(title="Liar's Dice", description="")
+    game.add_state_embed(embed)
+    view = game.get_state_ui()
+
+    await whisper(ctx, embed=embed, view=view)
+
+
+@ld_group.command(name="continue", description="Begin the next round of the game.")
 async def next_round(ctx: discord.Interaction):
     global ld_games
     await validate_cmd_presence(ctx)
@@ -420,7 +506,19 @@ async def next_round(ctx: discord.Interaction):
     await shout(ctx, embed=embed, view=view)
 
 
-@ld_group.command(name="raise")
+@ld_group.command(description="Take a look at your cup.")
+async def peek(ctx: discord.Interaction):
+    global ld_games
+    await validate_cmd_presence(ctx)
+    game = ld_games[ctx.channel_id]
+
+    dice = game.peek(ctx.user)
+    await whisper(ctx, str(dice), delete_after=60)
+
+
+@ld_group.command(name="raise", description="Raise the bet! "
+                                            "First number is the number of dice, "
+                                            "second number is the number on the dice.")
 async def raise_bet(ctx: discord.Interaction, dice_count: int, dice_num: int):
     global ld_games
     await validate_cmd_presence(ctx)
@@ -431,7 +529,7 @@ async def raise_bet(ctx: discord.Interaction, dice_count: int, dice_num: int):
                      f"Next to raise is {game.get_player(game.raiser_idx).mention}.")
 
 
-@ld_group.command(name="call")
+@ld_group.command(name="call", description="12 fives... Call me a liar.")
 async def call_bet(ctx: discord.Interaction):
     global ld_games
     await validate_cmd_presence(ctx)
@@ -440,33 +538,29 @@ async def call_bet(ctx: discord.Interaction):
     result = game.call_bet(ctx.user)
     await shout(ctx, embed=result)
     if not game.is_game_finished:
-        await shout(ctx, f"Press the button below to move on to the next round.", view=get_continue_ui())
+        if game.infinite_mode:
+            await shout(ctx, f"Press the button below to move on to the next round.", view=game.get_continue_ui())
+        else:
+            await shout(ctx, f"Use the buttons below to continue to the next round or end the game.",
+                        view=game.get_continue_ui())
     else:
         await shout(ctx, f"And the game is over! "
                          f"{game.get_player(0).mention}, congratulations! You're the winner!\n"
                          f"To prepare a new game with the same people, press the button below.",
                     view=get_end_ui())
 
-
-@ld_group.command()
-async def peek(ctx: discord.Interaction):
+@ld_group.command(description="Forcibly end the game.")
+async def end(ctx: discord.Interaction):
     global ld_games
     await validate_cmd_presence(ctx)
     game = ld_games[ctx.channel_id]
 
-    dice = game.peek(ctx.user)
-    await whisper(ctx, str(dice), delete_after=60)
+    if not (ctx.user == game.creator or ctx.user.guild_permissions.administrator):
+        raise ErrorResponse("Only the game creator or an admin can end the game.")
 
-@ld_group.command()
-async def info(ctx: discord.Interaction):
-    global ld_games
-    await validate_cmd_presence(ctx, ignore_user=True)
-    game = ld_games[ctx.channel_id]
-
-    embed = discord.Embed(title="Liar's Dice", description="")
-    game.add_state_embed(embed)
-    view = game.get_state_ui()
-
-    await whisper(ctx, embed=embed, view=view)
+    result = game.end_game()
+    await shout(ctx, embed=result)
+    await shout(ctx, f"To prepare a new game with the same people, press the button below.",
+                view=get_end_ui())
 
 # endregion
