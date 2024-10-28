@@ -33,11 +33,11 @@ class LiarsDiceGame:
     cups: dict[int, list[int]]  # The cups belonging to each player. cups[player_id][X - 1] = # of Xs that player has
 
     def __init__(self, creator: discord.User, dice_per_player=5, dice_sides=6,
-                 kick_losers=True, allow_count_reset_on_increment=False):
+                 infinite_mode=False, allow_count_reset_on_increment=False):
         self.creator = creator
         self.dice_per_player = dice_per_player
         self.dice_sides = dice_sides
-        self.infinite_mode = kick_losers
+        self.infinite_mode = infinite_mode
         self.allow_count_reset_on_increment = allow_count_reset_on_increment
 
         self.all_players = set()
@@ -67,12 +67,14 @@ class LiarsDiceGame:
             raise ErrorResponse("You are already part of the game.")
         self.live_players.append(player)
         self.all_players.add(player)
+        self.loss_counts[player.id] = 0
 
     def leave(self, player: discord.User):
         if self.in_round:
             raise ErrorResponse("Cannot leave in the middle of the round.")
         self.live_players.remove(player)
         self.all_players.remove(player)
+        self.loss_counts.pop(player.id)
 
     def start(self, player: discord.User):
         if player != self.creator:
@@ -88,6 +90,7 @@ class LiarsDiceGame:
             new_order.append(self.live_players.pop(random.randint(0, len(self.live_players) - 1)))
 
         self.live_players = new_order
+        self.loss_counts = {player.id: 0 for player in self.all_players}
 
         self.begin_next_round()
 
@@ -217,6 +220,7 @@ class LiarsDiceGame:
         return dice
 
     def add_state_embed(self, embed: discord.Embed):
+        embed.add_field(name="Mode:", value=("Infinite" if self.infinite_mode else "Default"), inline=False)
         if self.is_game_started():
             turn_order_str = ""
             for i in range(len(self.live_players)):
@@ -311,7 +315,10 @@ class ModeDropdown(discord.ui.Select):
     async def callback(self, interaction: Interaction[Client]):
         await interaction.response.defer()
         assert interaction.data is not None and "custom_id" in interaction.data, "Invalid interaction data"
-        self.game.infinite_mode = True if self.values[0] == "default" else False
+        self.game.infinite_mode = self.values[0] == "infinite"
+
+def get_call_button() -> discord.Button:
+    pass
 
 
 def get_end_ui() -> discord.ui.View:
@@ -537,17 +544,17 @@ async def call_bet(ctx: discord.Interaction):
 
     result = game.call_bet(ctx.user)
     await shout(ctx, embed=result)
-    if not game.is_game_finished:
-        if game.infinite_mode:
+    if game.infinite_mode:
+        await shout(ctx, f"Use the buttons below to continue to the next round or end the game.",
+                    view=game.get_continue_ui())
+    else:
+        if not game.is_game_finished:
             await shout(ctx, f"Press the button below to move on to the next round.", view=game.get_continue_ui())
         else:
-            await shout(ctx, f"Use the buttons below to continue to the next round or end the game.",
-                        view=game.get_continue_ui())
-    else:
-        await shout(ctx, f"And the game is over! "
-                         f"{game.get_player(0).mention}, congratulations! You're the winner!\n"
-                         f"To prepare a new game with the same people, press the button below.",
-                    view=get_end_ui())
+            await shout(ctx, f"And the game is over! "
+                             f"{game.get_player(0).mention}, congratulations! You're the winner!\n"
+                             f"To prepare a new game with the same people, press the button below.",
+                        view=get_end_ui())
 
 @ld_group.command(description="Forcibly end the game.")
 async def end(ctx: discord.Interaction):
