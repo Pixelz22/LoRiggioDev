@@ -240,23 +240,36 @@ class LiarsDiceGame:
             players_msg = ''.join([f"- {player.mention}\n" for player in self.all_players])
             embed.add_field(name="Players:", value=players_msg)
 
-    def get_state_ui(self) -> discord.ui.View:
-        if self.is_game_started():
-            view = discord.ui.View()
+    def create_view(self):  # Can't do return declaration because Python lacks good forward declaration
+        return LiarsDiceView(self)
 
+
+# region UI Components
+
+class LiarsDiceView(discord.ui.View):
+    game: LiarsDiceGame  # The game this view belongs to
+
+    def __init__(self, game: LiarsDiceGame):
+        super().__init__()
+        self.game = game
+        self.on_error = lambda interaction, err, item: on_error(interaction, err)
+
+    def add_gameplay_bar(self):
+        if self.game.is_game_started():
             peek_btn = discord.ui.Button(label="Peek")
             peek_btn.callback = peek.callback
-            view.add_item(peek_btn)
+            self.add_item(peek_btn)
 
-            view.on_error = lambda interaction, err, item: on_error(interaction, err)
-            return view
+            if self.game.current_bet != (0, 0):
+                call_btn = discord.ui.Button(label="Call", style=discord.ButtonStyle.primary)
+                call_btn.callback = call_bet.callback
+                self.add_item(call_btn)
+
         else:
-            return self.get_start_ui()
+            self.add_start_bar()
+        return self
 
-    def get_start_ui(self) -> discord.ui.View:
-        view = discord.ui.View()
-        view.on_error = lambda interaction, err, item: on_error(interaction, err)
-
+    def add_start_bar(self):
         join_btn = discord.ui.Button(label="Join Game")
         join_btn.callback = join.callback
         leave_btn = discord.ui.Button(label="Leave Game")
@@ -264,32 +277,36 @@ class LiarsDiceGame:
         start_btn = discord.ui.Button(label="Start!", style=discord.ButtonStyle.primary)
         start_btn.callback = start.callback
 
-        mode_dd = ModeDropdown(self, row=0)
+        self.add_item(join_btn)
+        self.add_item(leave_btn)
+        self.add_item(start_btn)
 
-        view.add_item(mode_dd)
-        view.add_item(join_btn)
-        view.add_item(leave_btn)
-        view.add_item(start_btn)
+        return self
 
-        return view
-
-    def get_continue_ui(self) -> discord.ui.View:
-        view = discord.ui.View()
-        view.on_error = lambda interaction, err, item: on_error(interaction, err)
-
+    def add_continue_bar(self):
         continue_btn = discord.ui.Button(label="Continue", style=discord.ButtonStyle.primary)
         continue_btn.callback = next_round.callback
-        view.add_item(continue_btn)
+        self.add_item(continue_btn)
 
-        if self.infinite_mode:
+        if self.game.infinite_mode:
             end_btn = discord.ui.Button(label="End Game")
             end_btn.callback = end.callback
-            view.add_item(end_btn)
+            self.add_item(end_btn)
 
-        return view
+        return self
 
+    def add_end_bar(self):
+        reset_btn = discord.ui.Button(label="Play again", style=discord.ButtonStyle.primary)
+        reset_btn.callback = reset.callback
 
-# region UI Components
+        self.add_item(reset_btn)
+
+        return self
+
+    def add_mode_dropdown(self):
+        self.add_item(ModeDropdown(self.game, row=0))
+        return self
+
 
 class ModeDropdown(discord.ui.Select):
     game: LiarsDiceGame  # The game this dropdown belongs to
@@ -299,10 +316,11 @@ class ModeDropdown(discord.ui.Select):
             discord.SelectOption(emoji=f"🎲", label=f"Default Mode",
                                  description="When a player loses, they're kicked from the table.",
                                  value="default",
-                                 default=True),
+                                 default=not game.infinite_mode),
             discord.SelectOption(emoji=f"🔄", label=f"Infinite Mode",
                                  description="Keep track of how many times each player lost.",
-                                 value="infinite")
+                                 value="infinite",
+                                 default=game.infinite_mode)
         ])
         self.game = game
 
@@ -316,21 +334,6 @@ class ModeDropdown(discord.ui.Select):
         await interaction.response.defer()
         assert interaction.data is not None and "custom_id" in interaction.data, "Invalid interaction data"
         self.game.infinite_mode = self.values[0] == "infinite"
-
-def get_call_button() -> discord.Button:
-    pass
-
-
-def get_end_ui() -> discord.ui.View:
-    view = discord.ui.View()
-    view.on_error = lambda interaction, err, item: on_error(interaction, err)
-
-    reset_btn = discord.ui.Button(label="Play again", style=discord.ButtonStyle.primary)
-    reset_btn.callback = reset.callback
-
-    view.add_item(reset_btn)
-
-    return view
 
 # endregion
 
@@ -350,9 +353,11 @@ async def new_game(ctx: discord.Interaction, force: bool = False):
             raise ErrorResponse("A game is already running. Run `/liars force_new` to force a new game.")
 
     ld_games[ctx.channel_id] = LiarsDiceGame(ctx.user)
+    game = ld_games[ctx.channel_id]
+
     await shout(ctx, f"Game was created for {ctx.channel.mention}! "
                      f"Use the buttons below to join, leave, or start!",
-                view=ld_games[ctx.channel_id].get_start_ui())
+                view=LiarsDiceView(game).add_mode_dropdown().add_start_bar())
 
 
 async def reset_game(ctx: discord.Interaction, force: bool = False):
@@ -371,7 +376,8 @@ async def reset_game(ctx: discord.Interaction, force: bool = False):
     game.reset()
 
     await shout(ctx, f"Game was reset for {ctx.channel.mention} with all the old players! "
-                     f"Use the buttons below to start the game!", view=game.get_start_ui())
+                     f"Use the buttons below to start the game!",
+                view=LiarsDiceView(game).add_mode_dropdown().add_start_bar())
 
 
 async def validate_cmd_presence(ctx: discord.Interaction, ignore_user=False):
@@ -475,9 +481,8 @@ async def start(ctx: discord.Interaction):
                           description=f"The die is cast, the round begun! "
                                       f"{game.get_player(game.raiser_idx).mention}, you set the bet.")
     game.add_state_embed(embed)
-    view = game.get_state_ui()
 
-    await shout(ctx, embed=embed, view=view)
+    await shout(ctx, embed=embed, view=LiarsDiceView(game).add_gameplay_bar())
 
 
 @ld_group.command(description="Get information about the state of the game.")
@@ -488,9 +493,8 @@ async def info(ctx: discord.Interaction):
 
     embed = discord.Embed(title="Liar's Dice", description="")
     game.add_state_embed(embed)
-    view = game.get_state_ui()
 
-    await whisper(ctx, embed=embed, view=view)
+    await whisper(ctx, embed=embed, view=LiarsDiceView(game).add_gameplay_bar())
 
 
 @ld_group.command(name="continue", description="Begin the next round of the game.")
@@ -508,9 +512,8 @@ async def next_round(ctx: discord.Interaction):
                           description="The die is cast, the round begun! "
                                       f"{game.get_player(game.raiser_idx).mention}, you set the bet.")
     game.add_state_embed(embed)
-    view = game.get_state_ui()
 
-    await shout(ctx, embed=embed, view=view)
+    await shout(ctx, embed=embed, view=LiarsDiceView(game).add_gameplay_bar())
 
 
 @ld_group.command(description="Take a look at your cup.")
@@ -532,8 +535,10 @@ async def raise_bet(ctx: discord.Interaction, dice_count: int, dice_num: int):
     game = ld_games[ctx.channel_id]
 
     game.raise_bet(ctx.user, dice_count, dice_num)
+
     await shout(ctx, f"{ctx.user.mention} has raised the bet to {dice_count} {dice_num}s. "
-                     f"Next to raise is {game.get_player(game.raiser_idx).mention}.")
+                     f"Next to raise is {game.get_player(game.raiser_idx).mention}.",
+                view=LiarsDiceView(game).add_gameplay_bar())
 
 
 @ld_group.command(name="call", description="12 fives... Call me a liar.")
@@ -543,18 +548,19 @@ async def call_bet(ctx: discord.Interaction):
     game = ld_games[ctx.channel_id]
 
     result = game.call_bet(ctx.user)
+    view = LiarsDiceView(game)
     await shout(ctx, embed=result)
     if game.infinite_mode:
         await shout(ctx, f"Use the buttons below to continue to the next round or end the game.",
-                    view=game.get_continue_ui())
+                    view=view.add_continue_bar())
     else:
         if not game.is_game_finished:
-            await shout(ctx, f"Press the button below to move on to the next round.", view=game.get_continue_ui())
+            await shout(ctx, f"Press the button below to move on to the next round.", view=view.add_continue_bar())
         else:
             await shout(ctx, f"And the game is over! "
                              f"{game.get_player(0).mention}, congratulations! You're the winner!\n"
                              f"To prepare a new game with the same people, press the button below.",
-                        view=get_end_ui())
+                        view=view.add_end_bar())
 
 @ld_group.command(description="Forcibly end the game.")
 async def end(ctx: discord.Interaction):
@@ -568,6 +574,6 @@ async def end(ctx: discord.Interaction):
     result = game.end_game()
     await shout(ctx, embed=result)
     await shout(ctx, f"To prepare a new game with the same people, press the button below.",
-                view=get_end_ui())
+                view=LiarsDiceView(game).add_end_bar())
 
 # endregion
