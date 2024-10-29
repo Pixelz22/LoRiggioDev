@@ -2,7 +2,6 @@ import random
 
 import discord
 from discord import app_commands, Interaction, Client
-from discord.utils import get
 
 from utils import whisper, shout
 
@@ -11,6 +10,8 @@ class ErrorResponse(RuntimeError):
     def __init__(self, msg):
         super().__init__(msg)
 
+
+my_emojis: dict[str, discord.Emoji] = {}
 
 class LiarsDiceGame:
     # Game Info
@@ -82,8 +83,8 @@ class LiarsDiceGame:
             raise ErrorResponse("Only the creator can start the game.")
         if self.round_num > 0:
             raise ErrorResponse("Game has already begun!")
-        if len(self.all_players) < 2:
-            raise ErrorResponse("Cannot begin a game with 1 player.")
+        if len(self.all_players) < 1:
+            raise ErrorResponse("Cannot begin a game with 1 players.")
 
         # Shuffle turn order
         new_order = []
@@ -171,8 +172,8 @@ class LiarsDiceGame:
         count = 0
         for p in self.live_players:
             p_count = self.cups[p.id][self.current_bet[1] - 1]
-            final_hands_messages.append(f"- {p.mention}: {self.peek(p)}\n")
-            count_messages.append(f"- {p.mention} has {p_count} {self.current_bet[1]}s\n")
+            final_hands_messages.append(f"- {p.mention}: {stringify_cup(self.peek(p))}\n")
+            count_messages.append(f"- {p.mention} has {p_count} {stringify_die(self.current_bet[1])}s\n")
             count += p_count
         # Compare it to the bet
         bet_was_met = count >= self.current_bet[0]
@@ -233,8 +234,8 @@ class LiarsDiceGame:
                 turn_order_str += f"{i + 1}. {player_name}\n"
             embed.add_field(name="Turn Order:", value=turn_order_str)
 
-            current_bet_str = (f"{self.current_bet[0]} {self.current_bet[1]}s" if self.current_bet != (0, 0)
-                               else "Bet hasn't been set")
+            current_bet_str = (f"{self.current_bet[0]} {stringify_die(self.current_bet[1])}s"
+                               if self.current_bet != (0, 0) else "Bet hasn't been set")
             embed.add_field(name="Current Bet:", value=current_bet_str)
         else:
             embed.description = "The game has not yet started."
@@ -389,6 +390,19 @@ async def validate_cmd_presence(ctx: discord.Interaction, ignore_user=False):
         raise ErrorResponse(f"You are not a part of the {ctx.channel.mention} Liar's Dice game. "
                             f"Run `/liars join` to join the fun!")
 
+def stringify_die(die: int) -> str:
+    if die <= 6:
+        # Use the d6 custom emojis
+        return str(my_emojis[f"d6_{die}"])
+    else:
+        return str(die)
+
+def stringify_cup(cup: list[int]) -> str:
+    msg = ""
+    for die in cup:
+        msg = f"{msg} {stringify_die(die)}"
+    return msg
+
 
 # endregion
 
@@ -423,9 +437,10 @@ async def on_error(ctx: discord.Interaction[discord.Client], err: app_commands.A
 @ld_group.command(name="help", description="Pulls up the manual!")
 async def help_cmd(ctx: discord.Interaction):
     global ld_games
+    global my_emojis
 
     embed = discord.Embed(title="Liar's Dice Bot Manual",
-                          description="Here are some helpful commands for interacting with the bot!")
+                          description=f"Here are some helpful commands for interacting with the bot! {my_emojis['d6_1']}")
     cmd_descriptions = ''.join([f"- */liars {cmd.name}*: {cmd.description}\n" for cmd in ld_group.walk_commands()])
     embed.add_field(name="Command List:", value=cmd_descriptions)
 
@@ -524,7 +539,7 @@ async def peek(ctx: discord.Interaction):
     game = ld_games[ctx.channel_id]
 
     dice = game.peek(ctx.user)
-    await whisper(ctx, str(dice), delete_after=60)
+    await whisper(ctx, stringify_cup(dice), delete_after=60)
 
 
 @ld_group.command(name="raise", description="Raise the bet! "
@@ -537,7 +552,7 @@ async def raise_bet(ctx: discord.Interaction, dice_count: int, dice_num: int):
 
     game.raise_bet(ctx.user, dice_count, dice_num)
 
-    await shout(ctx, f"{ctx.user.mention} has raised the bet to {dice_count} {dice_num}s. "
+    await shout(ctx, f"{ctx.user.mention} has raised the bet to {dice_count} {stringify_die(dice_num)}s. "
                      f"Next to raise is {game.get_player(game.raiser_idx).mention}.",
                 view=LiarsDiceView(game).add_gameplay_bar())
 
@@ -578,3 +593,10 @@ async def end(ctx: discord.Interaction):
                 view=LiarsDiceView(game).add_end_bar())
 
 # endregion
+
+def load_emojis(client: discord.Client):
+    global my_emojis
+    # load d6
+    for i in range(1, 7):
+        emoji = discord.utils.get(client.emojis, name=f"d6_{i}")
+        my_emojis[emoji.name] = emoji

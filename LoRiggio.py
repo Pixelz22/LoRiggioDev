@@ -44,6 +44,7 @@ loriggio = app_commands.Group(name="loriggio", description="testing?")
 @client.event
 async def on_ready():
     print(f'{client.user} has connected to Discord!')
+    LiarsDice.load_emojis(client)
 
 @client.event
 async def on_message(msg: discord.Message):
