@@ -2,6 +2,7 @@ import random
 
 import discord
 from discord import app_commands, Interaction, Client
+from discord.utils import get
 
 from utils import whisper, shout
 

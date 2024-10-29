@@ -5,6 +5,7 @@ import logging
 import json
 import discord
 from discord import app_commands
+from discord.utils import get
 import os.path
 
 from utils import srcpath, whisper, shout
@@ -85,7 +86,7 @@ async def on_message(msg: discord.Message):
 
 @loriggio.command()
 async def psst(ctx: discord.Interaction):
-    await whisper(ctx, "psssssssst")
+    await whisper(ctx, f"psssssssst {get(client.emojis, name='d6_1')}")
 
 @loriggio.command()
 async def ping(ctx: discord.Interaction, user: discord.User):
