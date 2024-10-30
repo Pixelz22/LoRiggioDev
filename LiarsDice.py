@@ -186,7 +186,7 @@ class LiarsDiceGame:
         # Construct the result message
         dice_count_msg = ''.join(count_messages)
         final_hands_msg = ''.join(final_hands_messages)
-        result_msg = f"That's {count} {self.current_bet[1]}s. " + (
+        result_msg = f"That's {count} {stringify_die(self.current_bet[1])}s. " + (
             f"{player.mention}, the bet holds! You're out!" if bet_was_met
             else f"{last_raiser.mention}, you're a liar! You're out!")
 
