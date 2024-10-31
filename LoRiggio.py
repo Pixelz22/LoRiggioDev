@@ -64,7 +64,6 @@ async def on_message(msg: discord.Message):
                 g = msg.guild
             else:
                 g = discord.Object(id=int(split[1]))
-            tree.copy_global_to(guild=g)
             await tree.sync(guild=g)
         f_log.info("Performed authorized sync.")
         await msg.add_reaction("✅")  # leave confirmation
@@ -79,6 +78,7 @@ async def on_message(msg: discord.Message):
             else:
                 g = discord.Object(id=int(split[1]))
             tree.clear_commands(guild=g)
+            await tree.sync(guild=g)
         f_log.info("Cleared command tree.")
         await msg.add_reaction("✅")  # leave confirmation
         return

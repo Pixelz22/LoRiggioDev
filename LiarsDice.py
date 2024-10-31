@@ -390,10 +390,13 @@ async def validate_cmd_presence(ctx: discord.Interaction, ignore_user=False):
         raise ErrorResponse(f"You are not a part of the {ctx.channel.mention} Liar's Dice game. "
                             f"Run `/liars join` to join the fun!")
 
+
+die_colors = ["red", "blurple", "lime"]
+
 def stringify_die(die: int) -> str:
     if die <= 6:
         # Use the d6 custom emojis
-        return str(my_emojis[f"d6_{die}"])
+        return str(my_emojis[f"d6_{random.choice(die_colors)}_{die}"])
     else:
         return str(die)
 
@@ -598,5 +601,6 @@ def load_emojis(client: discord.Client):
     global my_emojis
     # load d6
     for i in range(1, 7):
-        emoji = discord.utils.get(client.emojis, name=f"d6_{i}")
-        my_emojis[emoji.name] = emoji
+        for color in die_colors:
+            emoji = discord.utils.get(client.emojis, name=f"d6_{color}_{i}")
+            my_emojis[emoji.name] = emoji
