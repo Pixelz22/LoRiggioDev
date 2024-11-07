@@ -414,19 +414,24 @@ def stringify_cup(cup: list[int]) -> str:
 
 ld_group = app_commands.Group(name="liars", description="Commands related to playing the game Liar's Dice.")
 
-
-@ld_group.interaction_check
-async def interaction_check(ctx: discord.Interaction):
+async def interaction_check(ctx: discord.Interaction) -> bool:
     if ctx.guild is None:
         await shout(ctx, "I'm sorry, but you can't run this game in a DM. Try running it in a server!")
         return False
     return True
+
+# Apparently this works better than the decorator
+ld_group.interaction_check = interaction_check
+ld_group.guild_only = True
 
 
 @ld_group.error
 async def on_error(ctx: discord.Interaction[discord.Client], err: app_commands.AppCommandError | Exception):
     if isinstance(err, app_commands.errors.CommandInvokeError):
         err = err.original
+
+    if isinstance(err, discord.app_commands.CheckFailure):
+        return
 
     if isinstance(err, ErrorResponse):
         await whisper(ctx, str(err))
