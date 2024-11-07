@@ -17,11 +17,41 @@ class LiarsDiceGameMode(Enum):
     SUDDEN_DEATH = 3
     INFINITE = 4
 
+    def __str__(self):
+        return self.name.replace('_', ' ').title()
+
 
 GAMEMODE_CONVERSION: dict[str, LiarsDiceGameMode] = {mode.name: mode for mode in LiarsDiceGameMode}
 
+# region Emoji Stuff
 
 my_emojis: dict[str, discord.Emoji] = {}
+
+die_colors = ["red"]
+
+def load_emojis(client: discord.Client):
+    global my_emojis
+    # load d6
+    for i in range(1, 7):
+        for color in die_colors:
+            emoji = discord.utils.get(client.emojis, name=f"d6_{color}_{i}")
+            my_emojis[emoji.name] = emoji
+
+def stringify_die(die: int) -> str:
+    if die <= 6:
+        # Use the d6 custom emojis
+        return str(my_emojis[f"d6_{random.choice(die_colors)}_{die}"])
+    else:
+        return str(die)
+
+def stringify_cup(cup: list[int]) -> str:
+    msg = ""
+    for die in cup:
+        msg = f"{msg} {stringify_die(die)}"
+    return msg
+
+# endregion
+
 
 class LiarsDicePlayerState:
     num_dice: int  # how many dice this player has left
@@ -87,6 +117,9 @@ class LiarsDiceGame:
     def is_game_started(self) -> bool:
         return self.round_num > 0
 
+    def is_player_present(self, player: discord.User):
+        return player in self.all_players or player in self.queued_to_join
+
     def get_player(self, idx: int) -> discord.User:
         return self.live_players[idx % len(self.live_players)]
 
@@ -112,7 +145,7 @@ class LiarsDiceGame:
             raise ErrorResponse("Only the creator can start the game.")
         if self.round_num > 0:
             raise ErrorResponse("Game has already begun!")
-        if len(self.all_players) + len(self.queued_to_join) <= 1:
+        if len(self.all_players) + len(self.queued_to_join) < 1:
             raise ErrorResponse("Cannot begin a game with 1 players.")
 
         self.begin_next_round()
@@ -142,7 +175,7 @@ class LiarsDiceGame:
         # Add any new players to the game
         for p in self.queued_to_join:
             self.all_players.add(p)
-            self.live_players.insert(random.randint(0, len(self.live_players) - 1), p)
+            self.live_players.insert(random.randint(0, len(self.live_players)), p)
             self.player_states[p.id] = LiarsDicePlayerState(self)
 
         self.round_num += 1
@@ -263,7 +296,7 @@ class LiarsDiceGame:
         return dice
 
     def add_state_embed(self, embed: discord.Embed):
-        embed.add_field(name="Mode:", value=self.gamemode.name, inline=False)
+        embed.add_field(name="Mode:", value=str(self.gamemode), inline=False)
         if self.is_game_started():
             turn_order_str = ""
             for i in range(len(self.live_players)):
@@ -435,26 +468,9 @@ async def validate_cmd_presence(ctx: discord.Interaction, ignore_user=False):
     global ld_games
     if ctx.channel_id not in ld_games:
         raise ErrorResponse("There is no game in this channel. Run `/liars new` to make one!")
-    if not ignore_user and ctx.user not in ld_games[ctx.channel_id].all_players:
+    if not ignore_user and not ld_games[ctx.channel_id].is_player_present(ctx.user):
         raise ErrorResponse(f"You are not a part of the {ctx.channel.mention} Liar's Dice game. "
                             f"Run `/liars join` to join the fun!")
-
-
-die_colors = ["red", "blurple", "lime"]
-
-def stringify_die(die: int) -> str:
-    if die <= 6:
-        # Use the d6 custom emojis
-        return str(my_emojis[f"d6_{random.choice(die_colors)}_{die}"])
-    else:
-        return str(die)
-
-def stringify_cup(cup: list[int]) -> str:
-    msg = ""
-    for die in cup:
-        msg = f"{msg} {stringify_die(die)}"
-    return msg
-
 
 # endregion
 
@@ -650,11 +666,3 @@ async def end(ctx: discord.Interaction):
                 view=LiarsDiceView(game).add_end_bar())
 
 # endregion
-
-def load_emojis(client: discord.Client):
-    global my_emojis
-    # load d6
-    for i in range(1, 7):
-        for color in die_colors:
-            emoji = discord.utils.get(client.emojis, name=f"d6_{color}_{i}")
-            my_emojis[emoji.name] = emoji
