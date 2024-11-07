@@ -1,4 +1,5 @@
 import random
+from enum import Enum
 
 import discord
 from discord import app_commands, Interaction, Client
@@ -10,21 +11,48 @@ class ErrorResponse(RuntimeError):
     def __init__(self, msg):
         super().__init__(msg)
 
+class LiarsDiceGameMode(Enum):
+    LAST_MAN_STANDING = 1
+    FIRST_ELIMINATION = 2
+    SUDDEN_DEATH = 3
+    INFINITE = 4
+
+
+GAMEMODE_CONVERSION: dict[str, LiarsDiceGameMode] = {mode.name: mode for mode in LiarsDiceGameMode}
+
 
 my_emojis: dict[str, discord.Emoji] = {}
+
+class LiarsDicePlayerState:
+    num_dice: int  # how many dice this player has left
+    loss_count: int  # How many times this player has lost a round
+    cup: list[int]  # The cup belonging to this player. cup[X - 1] = # of Xs this player has
+
+    def __init__(self, game):
+        self.game = game  # Have to define it without strong typing because Python doesn't have good forward declaration
+        self.num_dice = game.dice_per_player
+        self.loss_count = 0
+
+    def cast_dice(self):
+        self.cup = [0 for i in range(self.game.dice_sides)]
+        for die in [random.randint(1, self.game.dice_sides) for _ in range(self.num_dice)]:
+            self.cup[die - 1] += 1
 
 class LiarsDiceGame:
     # Game Info
     creator: discord.User  # Discord ID of the creator?
     all_players: set[discord.User]  # Set of all players present at the end of the game
-    live_players: list[discord.User]  # Set of Discord Users of players still in the game
+    live_players: list[discord.User]  # List of Discord Users of players still in the game, used to maintain turn order
+    player_states = dict[int, LiarsDicePlayerState]  # The state of each player in the game
     is_game_finished: bool  # Is the game over?
-    loss_counts: dict[int, int]  # Map each player's ID to how many times they've lost
+
+    # Matchmaking
+    queued_to_join: list[discord.User]  # list of players to join the game next round
 
     # Game Settings
     dice_per_player: int  # duh
     dice_sides: int  # What type of dice we playin' with? D6? D20?
-    infinite_mode: bool  # Do players stay in the game when they lose?
+    gamemode: LiarsDiceGameMode  # What version of the game are we playing
     allow_count_reset_on_increment: bool  # Can a player lower the dice count if they raise the dice num
 
     # Round Info
@@ -32,29 +60,29 @@ class LiarsDiceGame:
     round_num: int  # current round number
     raiser_idx: int  # idx of the next player to raise the bet
     current_bet: tuple[int, int]  # The current bet. Format: [dice count, # on the dice], e.g. [2, 3] = 2 Threes
-    cups: dict[int, list[int]]  # The cups belonging to each player. cups[player_id][X - 1] = # of Xs that player has
 
     def __init__(self, creator: discord.User, dice_per_player=5, dice_sides=6,
-                 infinite_mode=False, allow_count_reset_on_increment=False):
+                 gamemode=LiarsDiceGameMode.FIRST_ELIMINATION, allow_count_reset_on_increment=False):
         self.creator = creator
         self.dice_per_player = dice_per_player
         self.dice_sides = dice_sides
-        self.infinite_mode = infinite_mode
+        self.gamemode = gamemode
         self.allow_count_reset_on_increment = allow_count_reset_on_increment
 
         self.all_players = set()
+        self.queued_to_join = list()
         self.reset()
         self.join(creator)
 
     def reset(self):
         self.live_players = list(self.all_players)
-        self.cups = dict()
         self.round_num = 0  # We count rounds starting at 1. Fight me.
         self.raiser_idx = 0
         self.current_bet = 0, 0
         self.in_round = False
         self.is_game_finished = False
-        self.loss_counts = {player.id: 0 for player in self.all_players}
+        self.player_states = {player.id: LiarsDicePlayerState(self)
+                              for player in self.all_players}
 
     def is_game_started(self) -> bool:
         return self.round_num > 0
@@ -63,36 +91,29 @@ class LiarsDiceGame:
         return self.live_players[idx % len(self.live_players)]
 
     def join(self, player: discord.User):
-        if self.round_num > 0:
-            raise ErrorResponse("Game has started, cannot add additional players.")
-        if player in self.all_players:
+        if player in self.all_players or player in self.queued_to_join:
             raise ErrorResponse("You are already part of the game.")
-        self.live_players.append(player)
-        self.all_players.add(player)
-        self.loss_counts[player.id] = 0
+        self.queued_to_join.append(player)
 
     def leave(self, player: discord.User):
-        if self.in_round:
-            raise ErrorResponse("Cannot leave in the middle of the round.")
-        self.live_players.remove(player)
-        self.all_players.remove(player)
-        self.loss_counts.pop(player.id)
+        if player in self.all_players:
+            if self.in_round:
+                raise ErrorResponse("Cannot leave in the middle of the round.")
+            self.live_players.remove(player)
+            self.all_players.remove(player)
+            self.player_states.pop(player.id)
+        elif player in self.queued_to_join:
+            self.queued_to_join.remove(player)
+        else:
+            raise ErrorResponse("You aren't part of the game.")
 
     def start(self, player: discord.User):
         if player != self.creator:
             raise ErrorResponse("Only the creator can start the game.")
         if self.round_num > 0:
             raise ErrorResponse("Game has already begun!")
-        if len(self.all_players) < 1:
+        if len(self.all_players) + len(self.queued_to_join) <= 1:
             raise ErrorResponse("Cannot begin a game with 1 players.")
-
-        # Shuffle turn order
-        new_order = []
-        for i in range(len(self.live_players)):
-            new_order.append(self.live_players.pop(random.randint(0, len(self.live_players) - 1)))
-
-        self.live_players = new_order
-        self.loss_counts = {player.id: 0 for player in self.all_players}
 
         self.begin_next_round()
 
@@ -106,7 +127,7 @@ class LiarsDiceGame:
         embed = discord.Embed(title="Liar's Dice: Final Results",
                               description="The game is over! Here are everyone's final scores")
 
-        scores_msg = ''.join([f"- {player.mention}: Lost {self.loss_counts[player.id]} times\n"
+        scores_msg = ''.join([f"- {player.mention}: Lost {self.player_states[player.id].loss_count} times\n"
                               for player in self.all_players])
         embed.add_field(name="", value=scores_msg)
 
@@ -118,13 +139,18 @@ class LiarsDiceGame:
         if self.in_round:
             raise ErrorResponse("We're already in the middle of a round.")
 
+        # Add any new players to the game
+        for p in self.queued_to_join:
+            self.all_players.add(p)
+            self.live_players.insert(random.randint(0, len(self.live_players) - 1), p)
+            self.player_states[p.id] = LiarsDicePlayerState(self)
+
         self.round_num += 1
         self.raiser_idx = self.round_num - 1
 
+        # Cast the dice for players still in the game
         for player in self.live_players:
-            self.cups[player.id] = [0 for _ in range(self.dice_sides)]
-            for die in [random.randint(1, self.dice_sides) for _ in range(self.dice_per_player)]:
-                self.cups[player.id][die - 1] += 1
+            self.player_states[player.id].cast_dice()
 
         self.current_bet = 0, 0
         self.in_round = True
@@ -171,7 +197,7 @@ class LiarsDiceGame:
         final_hands_messages = []
         count = 0
         for p in self.live_players:
-            p_count = self.cups[p.id][self.current_bet[1] - 1]
+            p_count = self.player_states[p.id].cup[self.current_bet[1] - 1]
             final_hands_messages.append(f"- {p.mention}: {stringify_cup(self.peek(p))}\n")
             count_messages.append(f"- {p.mention} has {p_count} {stringify_die(self.current_bet[1])}s\n")
             count += p_count
@@ -202,27 +228,42 @@ class LiarsDiceGame:
         return embed
 
     def on_player_lose(self, player: discord.User):
-        if not self.infinite_mode:
-            # Kick either the caller or the last person to raise
+        if self.gamemode == LiarsDiceGameMode.SUDDEN_DEATH:
+            # Kick the player who lost
             self.live_players.remove(player)
-            self.cups.pop(player.id)
 
             if len(self.live_players) <= 1:
                 self.is_game_finished = True
-        else:
-            self.loss_counts[player.id] += 1
+            return
+        ps = self.player_states[player.id]
+        if self.gamemode == LiarsDiceGameMode.LAST_MAN_STANDING:
+            ps.loss_count += 1
+            ps.num_dice -= 1
+            if ps.num_dice <= 0:
+                # Kick the player if they're out of dice
+                self.live_players.remove(player)
+
+                if len(self.live_players) <= 1:
+                    self.is_game_finished = True
+        elif self.gamemode == LiarsDiceGameMode.FIRST_ELIMINATION:
+            ps.loss_count += 1
+            ps.num_dice -= 1
+            if ps.num_dice <= 0:
+                self.is_game_finished = True
+        elif self.gamemode == LiarsDiceGameMode.INFINITE:
+            ps.loss_count += 1
 
     def peek(self, player: discord.User) -> list[int]:
         if self.round_num < 1:
             raise ErrorResponse("No dice have been thrown yet.")
         dice = []
-        for dice_num, dice_count in enumerate(self.cups[player.id]):
+        for dice_num, dice_count in enumerate(self.player_states[player.id].cup):
             for _ in range(dice_count):
                 dice.append(dice_num + 1)
         return dice
 
     def add_state_embed(self, embed: discord.Embed):
-        embed.add_field(name="Mode:", value=("Infinite" if self.infinite_mode else "Default"), inline=False)
+        embed.add_field(name="Mode:", value=self.gamemode.name, inline=False)
         if self.is_game_started():
             turn_order_str = ""
             for i in range(len(self.live_players)):
@@ -290,7 +331,7 @@ class LiarsDiceView(discord.ui.View):
         continue_btn.callback = next_round.callback
         self.add_item(continue_btn)
 
-        if self.game.infinite_mode:
+        if self.game.gamemode == LiarsDiceGameMode.INFINITE:
             end_btn = discord.ui.Button(label="End Game")
             end_btn.callback = end.callback
             self.add_item(end_btn)
@@ -315,14 +356,22 @@ class ModeDropdown(discord.ui.Select):
 
     def __init__(self, game: LiarsDiceGame, row: int = None):
         super().__init__(row=row, options=[
-            discord.SelectOption(emoji=f"🎲", label=f"Default Mode",
-                                 description="When a player loses, they're kicked from the table.",
-                                 value="default",
-                                 default=not game.infinite_mode),
+            discord.SelectOption(emoji=f"🎲", label=f"First Elimination",
+                                 description="Standard dice elimination, ends after first player is out.",
+                                 value=LiarsDiceGameMode.FIRST_ELIMINATION.name,
+                                 default=game.gamemode == LiarsDiceGameMode.FIRST_ELIMINATION),
+            discord.SelectOption(emoji=f"🥾", label=f"Last Man Standing",
+                                 description="Standard dice elimination, ends when one player remains.",
+                                 value=LiarsDiceGameMode.LAST_MAN_STANDING.name,
+                                 default=game.gamemode == LiarsDiceGameMode.LAST_MAN_STANDING),
+            discord.SelectOption(emoji=f"☠️", label=f"Sudden Death",
+                                 description="When a player loses, they are kicked from the table.",
+                                 value=LiarsDiceGameMode.SUDDEN_DEATH.name,
+                                 default=game.gamemode == LiarsDiceGameMode.SUDDEN_DEATH),
             discord.SelectOption(emoji=f"🔄", label=f"Infinite Mode",
-                                 description="Keep track of how many times each player lost.",
-                                 value="infinite",
-                                 default=game.infinite_mode)
+                                 description="Game continues indefinitely.",
+                                 value=LiarsDiceGameMode.INFINITE.name,
+                                 default=game.gamemode == LiarsDiceGameMode.INFINITE)
         ])
         self.game = game
 
@@ -335,7 +384,7 @@ class ModeDropdown(discord.ui.Select):
     async def callback(self, interaction: Interaction[Client]):
         await interaction.response.defer()
         assert interaction.data is not None and "custom_id" in interaction.data, "Invalid interaction data"
-        self.game.infinite_mode = self.values[0] == "infinite"
+        self.game.gamemode = GAMEMODE_CONVERSION[self.values[0]]
 
 # endregion
 
@@ -574,7 +623,7 @@ async def call_bet(ctx: discord.Interaction):
     result = game.call_bet(ctx.user)
     view = LiarsDiceView(game)
     await shout(ctx, embed=result)
-    if game.infinite_mode:
+    if game.gamemode == LiarsDiceGameMode.INFINITE:
         await shout(ctx, f"Use the buttons below to continue to the next round or end the game.",
                     view=view.add_continue_bar())
     else:
