@@ -177,6 +177,7 @@ class LiarsDiceGame:
             self.all_players.add(p)
             self.live_players.insert(random.randint(0, len(self.live_players)), p)
             self.player_states[p.id] = LiarsDicePlayerState(self)
+        self.queued_to_join.clear()
 
         self.round_num += 1
         self.raiser_idx = self.round_num - 1
@@ -513,7 +514,7 @@ async def help_cmd(ctx: discord.Interaction):
     global my_emojis
 
     embed = discord.Embed(title="Liar's Dice Bot Manual",
-                          description=f"Here are some helpful commands for interacting with the bot! {my_emojis['d6_1']}")
+                          description=f"Here are some helpful commands for interacting with the bot! {stringify_die(5)}")
     cmd_descriptions = ''.join([f"- */liars {cmd.name}*: {cmd.description}\n" for cmd in ld_group.walk_commands()])
     embed.add_field(name="Command List:", value=cmd_descriptions)
 
