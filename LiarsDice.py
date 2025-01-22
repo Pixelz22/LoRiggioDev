@@ -11,6 +11,7 @@ class ErrorResponse(RuntimeError):
     def __init__(self, msg):
         super().__init__(msg)
 
+
 class LiarsDiceGameMode(Enum):
     LAST_MAN_STANDING = 1
     FIRST_ELIMINATION = 2
@@ -29,6 +30,7 @@ my_emojis: dict[str, discord.Emoji] = {}
 
 die_colors = ["red"]
 
+
 def load_emojis(client: discord.Client):
     global my_emojis
     # load d6
@@ -37,6 +39,7 @@ def load_emojis(client: discord.Client):
             emoji = discord.utils.get(client.emojis, name=f"d6_{color}_{i}")
             my_emojis[emoji.name] = emoji
 
+
 def stringify_die(die: int) -> str:
     if die <= 6:
         # Use the d6 custom emojis
@@ -44,11 +47,13 @@ def stringify_die(die: int) -> str:
     else:
         return str(die)
 
+
 def stringify_cup(cup: list[int]) -> str:
     msg = ""
     for die in cup:
         msg = f"{msg} {stringify_die(die)}"
     return msg
+
 
 # endregion
 
@@ -67,6 +72,7 @@ class LiarsDicePlayerState:
         self.cup = [0 for i in range(self.game.dice_sides)]
         for die in [random.randint(1, self.game.dice_sides) for _ in range(self.num_dice)]:
             self.cup[die - 1] += 1
+
 
 class LiarsDiceGame:
     # Game Info
@@ -117,8 +123,8 @@ class LiarsDiceGame:
     def is_game_started(self) -> bool:
         return self.round_num > 0
 
-    def is_player_present(self, player: discord.User):
-        return player in self.all_players or player in self.queued_to_join
+    def is_player_present(self, player: discord.User, allow_queued_players: bool = False):
+        return player in self.all_players or (allow_queued_players and player in self.queued_to_join)
 
     def get_player(self, idx: int) -> discord.User:
         return self.live_players[idx % len(self.live_players)]
@@ -225,6 +231,8 @@ class LiarsDiceGame:
         """
         if self.current_bet == (0, 0):
             raise ErrorResponse("Bet has not been set.")
+        if not self.in_round:
+            raise ErrorResponse("You aren't currently in a round.")
 
         # Total up all the desired type of die
         count_messages = []
@@ -420,6 +428,7 @@ class ModeDropdown(discord.ui.Select):
         assert interaction.data is not None and "custom_id" in interaction.data, "Invalid interaction data"
         self.game.gamemode = GAMEMODE_CONVERSION[self.values[0]]
 
+
 # endregion
 
 
@@ -465,13 +474,15 @@ async def reset_game(ctx: discord.Interaction, force: bool = False):
                 view=LiarsDiceView(game).add_mode_dropdown().add_start_bar())
 
 
-async def validate_cmd_presence(ctx: discord.Interaction, ignore_user=False):
+async def validate_cmd_presence(ctx: discord.Interaction, ignore_user=False, allow_queued_players=False):
     global ld_games
     if ctx.channel_id not in ld_games:
         raise ErrorResponse("There is no game in this channel. Run `/liars new` to make one!")
-    if not ignore_user and not ld_games[ctx.channel_id].is_player_present(ctx.user):
+    if (not ignore_user and
+            not ld_games[ctx.channel_id].is_player_present(ctx.user, allow_queued_players=allow_queued_players)):
         raise ErrorResponse(f"You are not a part of the {ctx.channel.mention} Liar's Dice game. "
                             f"Run `/liars join` to join the fun!")
+
 
 # endregion
 
@@ -480,11 +491,13 @@ async def validate_cmd_presence(ctx: discord.Interaction, ignore_user=False):
 
 ld_group = app_commands.Group(name="liars", description="Commands related to playing the game Liar's Dice.")
 
+
 async def interaction_check(ctx: discord.Interaction) -> bool:
     if ctx.guild is None:
         await shout(ctx, "I'm sorry, but you can't run this game in a DM. Try running it in a server!")
         return False
     return True
+
 
 # Apparently this works better than the decorator
 ld_group.interaction_check = interaction_check
@@ -553,7 +566,7 @@ async def join(ctx: discord.Interaction):
 @ld_group.command(description="Leave the game for the channel you called the command in.")
 async def leave(ctx: discord.Interaction):
     global ld_games
-    await validate_cmd_presence(ctx)
+    await validate_cmd_presence(ctx, allow_queued_players=True)
 
     ld_games[ctx.channel_id].leave(ctx.user)
     await shout(ctx, f"{ctx.user.mention} has left the game.")
@@ -562,14 +575,15 @@ async def leave(ctx: discord.Interaction):
 @ld_group.command(description="Start the game for the channel you called the command in.")
 async def start(ctx: discord.Interaction):
     global ld_games
-    await validate_cmd_presence(ctx)
+    await validate_cmd_presence(ctx, allow_queued_players=True)
     game = ld_games[ctx.channel_id]
 
     game.start(ctx.user)
 
     embed = discord.Embed(title="Liar's Dice",
                           description=f"The die is cast, the round begun! "
-                                      f"{game.get_player(game.raiser_idx).mention}, you set the bet.")
+                                      f"{game.get_player(game.raiser_idx).mention}, you set the bet!\n"
+                                      f"Use '/liars raise'.")
     game.add_state_embed(embed)
 
     await shout(ctx, embed=embed, view=LiarsDiceView(game).add_gameplay_bar())
@@ -651,6 +665,7 @@ async def call_bet(ctx: discord.Interaction):
                              f"{game.get_player(0).mention}, congratulations! You're the winner!\n"
                              f"To prepare a new game with the same people, press the button below.",
                         view=view.add_end_bar())
+
 
 @ld_group.command(description="Forcibly end the game.")
 async def end(ctx: discord.Interaction):
